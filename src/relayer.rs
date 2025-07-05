@@ -1,0 +1,211 @@
+use std::{sync::Arc, time::Duration};
+use actix_web::{web, App, HttpServer};
+use log::{debug, info, trace};
+use actix_ws::{AggregatedMessage, CloseCode, MessageStream};
+use dashmap::DashMap;
+use futures_util::StreamExt;
+use tokio::{
+    select,
+    sync::oneshot,
+    time::{interval, timeout, Instant}
+};
+use uuid::Uuid;
+
+use crate::{
+    channel::{Channel, Channels},
+    config::RelayerConfig,
+    error::RelayerError,
+    routes::{create_channel, join_channel},
+    session::RelayerSessionShared
+};
+
+pub struct Relayer {
+    channels: Channels,
+    config: RelayerConfig,
+}
+
+pub type RelayerShared = Arc<Relayer>;
+
+impl Relayer {
+    pub fn new(config: RelayerConfig) -> RelayerShared {
+        Arc::new(Self {
+            channels: Arc::new(DashMap::new()),
+            config,
+        })
+    }
+
+    pub async fn run(self: &RelayerShared) -> Result<(), anyhow::Error> {
+        info!("XSWD Relayer will listen on '{}'", self.config.bind_address);
+        let this = Arc::clone(self);
+
+        HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::from(this.clone()))
+                .service(create_channel)
+                .service(join_channel)
+        })
+        .bind(self.config.bind_address.clone())?
+        .run()
+        .await?;
+
+        Ok(())
+    }
+
+    pub fn session_message_timeout(&self) -> Duration {
+        self.config.session_message_timeout
+    }
+
+    pub fn has_channel(&self, id: &Uuid) -> bool {
+        self.channels.contains_key(id)
+    }
+
+    // Send the channel id and wait for the configured timeout until the peer connect to the channel
+    async fn send_id_and_wait(&self, id: &Uuid, host: &mut RelayerSessionShared, stream: &mut MessageStream, receiver: oneshot::Receiver<RelayerSessionShared>) -> Result<RelayerSessionShared, RelayerError> {
+        // Send him the channel id
+        host.text(id.to_string()).await?;
+
+        // Now we wait that our peer connect
+        // We expect that it doesn't send any message until the client is connected
+        // otherwise we shutdown it
+        select! {
+            Some(_) = stream.next() => return Err(RelayerError::UnexpectedMessage),
+            res = timeout(self.config.channel_creation_timeout, receiver) => res?.map_err(|_| RelayerError::WaitingPeer)
+        }
+    }
+
+    // Join an existing channel to communicate with the remote peer safely
+    pub async fn join_channel(self: &RelayerShared, id: Uuid, client: RelayerSessionShared, stream: MessageStream) -> Result<(), RelayerError> {
+        let Some(mut channel) = self.channels.get_mut(&id) else  {
+            return Err(RelayerError::ChannelNotFound)
+        };
+
+        let host = channel.join(&client)?;
+
+        let this = Arc::clone(self);
+        actix_rt::spawn(this.handle_connection(id, stream, client, host));
+
+        Ok(())
+    }
+
+    // Create a new channel, this will create a new task waiting until the configured timeout
+    // for the peer to connect.
+    pub async fn create_new_channel(self: &RelayerShared, mut host: RelayerSessionShared, mut stream: MessageStream) -> Result<(), RelayerError> {
+        let id = Uuid::new_v4();
+        let (sender, receiver) = oneshot::channel();
+        let channel = Channel::new(host.clone(), sender);
+    
+        info!("channel #{} has been created", id);
+        self.channels.insert(id, channel);
+
+        let this = Arc::clone(self);
+        actix_rt::spawn(async move {
+            let client = match this.send_id_and_wait(&id, &mut host, &mut stream, receiver).await {
+                Ok(client) => client,
+                Err(e) => {
+                    let msg = e.to_string();
+                    let _ = host.close_internal(Some((CloseCode::Normal, msg).into())).await;
+
+                    // Delete the channel
+                    info!("channel #{} has expired", id);
+                    this.channels.remove(&id);
+
+                    return;
+                }
+            };
+            this.handle_connection(id, stream, host, client).await
+        });
+
+        Ok(())
+    }
+
+    // Handle a websocket session by forwarding every message to its peer and close its connection if the peer disconnect.
+    async fn handle_connection(self: RelayerShared, id: Uuid, stream: MessageStream, session: RelayerSessionShared, other: RelayerSessionShared) {
+        let mut stream = stream.max_frame_size(self.config.max_frame_size)
+            .aggregate_continuations();
+        let mut last_pong_received = Instant::now();
+        let mut interval = interval(self.config.keep_alive_interval);
+
+        let (sender, mut receiver) = oneshot::channel();
+        session.set_notify(sender).await
+            .expect("newly created session");
+
+        loop {
+            select! {
+                Ok(()) = &mut receiver => {
+                    debug!("received a close notification, closing session #{}", session.id());
+                    break;
+                },
+                _ = interval.tick() => {
+                    if last_pong_received.elapsed() > self.config.keep_alive_interval {
+                        debug!("session #{} didn't respond in time from our ping", session.id());
+                        break;
+                    }
+
+                    if let Err(e) = session.ping().await {
+                        debug!("Error while sending ping to session #{}: {}", session.id(), e);
+                        break;
+                    }
+                },
+                res = stream.next() => {
+                    let msg = match res {
+                        Some(msg) => match msg {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                debug!("Error while receiving message: {}", e);
+                                break;
+                            }
+                        },
+                        None => {
+                            break;
+                        },
+                    };
+
+                    match msg {
+                        AggregatedMessage::Text(text) => {
+                            if let Err(e) = other.text(text).await {
+                                debug!("couldn't forward message from session #{} to peer: {}", session.id(), e);
+                                break;
+                            }
+                        },
+                        AggregatedMessage::Close(reason) => {
+                            trace!("Received close message for session {} in {}: {:?}", session.id(), id, reason);
+                            break;
+                        },
+                        AggregatedMessage::Ping(data) => {
+                            trace!("Received ping message with size {} bytes from session #{}", data.len(), session.id());
+                            if !data.is_empty() {
+                                debug!("Ping data is not empty for session #{}", session.id());
+                                break;
+                            }
+
+                            if let Err(e) = session.pong().await {
+                                debug!("Error received while sending pong response to session #{}: {}", session.id(), e);
+                                break;
+                            }
+                        },
+                        AggregatedMessage::Pong(data) => {
+                            trace!("received pong from session #{}", session.id());
+                            if !data.is_empty() {
+                                debug!("Data in pong message is not empty for session #{}", session.id());
+                                break;
+                            }
+                            last_pong_received = Instant::now();
+                        },
+                        msg => {
+                            debug!("Received websocket message not supported: {:?}", msg);
+                            break;
+                        }
+                    }
+                },
+                else => break
+            }
+        };
+
+        let _ = session.close_internal(None).await;
+        let _ = other.close().await;
+
+        if self.channels.remove(&id).is_some() {
+            info!("channel #{} has been deleted", id);
+        }
+    }
+}

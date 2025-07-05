@@ -1,0 +1,23 @@
+[package]
+name = "xswd-relayer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "5"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1.0"
+thiserror = "1.0"
+xelis_common = { git = "https://github.com/xelis-project/xelis-blockchain", branch = "dev", package = "xelis_common", features = ["prompt"] }
+bytes = "1.10.1"
+actix-ws = "0.3.0"
+actix-rt = "2.10.0"
+log = "0.4.27"
+clap = { version = "4.5.40", features = ["string"] }
+humantime = "2.2.0"
+humantime-serde = "1.1.1"
