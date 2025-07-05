@@ -17,7 +17,7 @@ This makes it ideal for building **trustless communication layers**, encrypted t
 
 ## 🔒 Why XSWD Relayer?
 
-The [XSWD protocol](https://github.com/xelis-project/xswd) enables **secure communication between a dApp and a XELIS wallet**. However, this becomes problematic when the wallet is running on a **separate device** — for example:
+The [XSWD protocol](https://docs.xelis.io/features/wallet/xswd) enables **secure communication between a dApp and a XELIS wallet**. However, this becomes problematic when the wallet is running on a **separate device** — for example:
 
 - The wallet is on your **phone**
 - The dApp runs on your **desktop browser**
