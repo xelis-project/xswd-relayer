@@ -52,12 +52,12 @@ impl RelayerSession {
     }
 
     // this must be called from the task handling the session only
-    pub async fn text<S: Into<String>>(&self, value: S) -> Result<(), RelayerError> {
+    pub async fn text<S: ToString>(&self, value: S) -> Result<(), RelayerError> {
         let mut inner = self.inner.lock().await;
         let session = inner.as_mut()
             .ok_or(RelayerError::Closed)?;
 
-        timeout(self.server.session_message_timeout(), session.text(value.into())).await??;
+        timeout(self.server.session_message_timeout(), session.text(value.to_string())).await??;
         Ok(())
     }
 
