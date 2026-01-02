@@ -5,22 +5,6 @@ use humantime::parse_duration;
 use serde::{Deserialize, Serialize};
 use xelis_common::prompt::{default_logs_datetime_format, LogLevel, ModuleConfig};
 
-fn default_prometheus_route() -> String {
-    "/metrics".to_owned()
-}
-
-#[derive(Debug, Clone, clap::Args, Serialize, Deserialize)]
-pub struct PrometheusConfig {
-    /// Enable Prometheus metrics server
-    #[clap(long = "prometheus-enable")]
-    #[serde(default)]
-    pub enable: bool,
-    /// Route for the Prometheus metrics export
-    #[clap(name = "prometheus-route", long, default_value_t = default_prometheus_route())]
-    #[serde(default = "default_prometheus_route")]
-    pub route: String,
-}
-
 // Functions helpers for serde default values
 fn default_filename_log() -> String {
     "xswd-relayer.log".to_owned()
@@ -142,9 +126,6 @@ pub struct RelayerConfig {
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Prometheus configuration
-    #[structopt(flatten)]
-    pub prometheus: PrometheusConfig,
     /// Log configuration
     #[structopt(flatten)]
     pub log: LogConfig,
