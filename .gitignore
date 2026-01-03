@@ -1,2 +1,7 @@
 /target
 /logs
+*.log
+
+# Docker
+.env
+docker-compose.override.yml
