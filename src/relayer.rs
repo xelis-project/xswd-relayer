@@ -180,6 +180,12 @@ impl Relayer {
                                 break;
                             }
                         },
+                        AggregatedMessage::Binary(data) => {
+                            if let Err(e) = other.binary(data).await {
+                                debug!("couldn't forward binary message from session #{} to peer: {}", session.id(), e);
+                                break;
+                            }
+                        },
                         AggregatedMessage::Close(reason) => {
                             trace!("Received close message for session {} in {}: {:?}", session.id(), id, reason);
                             break;

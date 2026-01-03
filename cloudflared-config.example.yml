@@ -1,0 +1,37 @@
+# Cloudflare Tunnel Configuration Example for XSWD Relayer
+#
+# 1. Create tunnel: cloudflared tunnel create xswd-relayer
+# 2. Copy this to: /etc/cloudflared/config-xswd.yml (on your VPS)
+# 3. Update tunnel ID and credentials path below
+# 4. Install as service: sudo cloudflared service install --config /etc/cloudflared/config-xswd.yml
+# 5. Start: sudo systemctl start cloudflared && sudo systemctl enable cloudflared
+
+# Replace with your actual tunnel ID from: cloudflared tunnel list
+tunnel: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+
+# Path to credentials file (created when you run: cloudflared tunnel create)
+credentials-file: /root/.cloudflared/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX.json
+
+# Ingress rules - routes external traffic to your services
+ingress:
+  # Route for XSWD Relayer WebSocket
+  - hostname: xswd.yourdomain.com
+    service: ws://localhost:8080
+    originRequest:
+      # WebSocket-specific optimizations
+      noTLSVerify: false
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+      disableChunkedEncoding: true
+
+  # Catch-all rule (required)
+  - service: http_status:404
+
+# Optional: Metrics endpoint (default localhost:36677)
+# metrics: localhost:36677
+
+# Optional: Logging
+# loglevel: info
+# logfile: /var/log/cloudflared-xswd.log

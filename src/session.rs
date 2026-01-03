@@ -61,6 +61,17 @@ impl RelayerSession {
         Ok(())
     }
 
+    // Send binary data to the session
+    // this must be called from the task handling the session only
+    pub async fn binary(&self, data: bytes::Bytes) -> Result<(), RelayerError> {
+        let mut inner = self.inner.lock().await;
+        let session = inner.as_mut()
+            .ok_or(RelayerError::Closed)?;
+
+        timeout(self.server.session_message_timeout(), session.binary(data)).await??;
+        Ok(())
+    }
+
     // Close the session
     pub async fn close(&self) -> Result<(), RelayerError> {
         let mut notify = self.notify.lock().await;
