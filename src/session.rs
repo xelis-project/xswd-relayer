@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use actix_ws::{CloseReason, Session};
+use bytes::Bytes;
 use tokio::{sync::{oneshot, Mutex}, time::timeout};
 use uuid::Uuid;
 
@@ -61,9 +62,9 @@ impl RelayerSession {
         Ok(())
     }
 
-    // Send binary data to the session
+    // Send a binary message to the session
     // this must be called from the task handling the session only
-    pub async fn binary(&self, data: bytes::Bytes) -> Result<(), RelayerError> {
+    pub async fn binary(&self, data: impl Into<Bytes>) -> Result<(), RelayerError> {
         let mut inner = self.inner.lock().await;
         let session = inner.as_mut()
             .ok_or(RelayerError::Closed)?;

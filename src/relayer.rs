@@ -180,8 +180,8 @@ impl Relayer {
                                 break;
                             }
                         },
-                        AggregatedMessage::Binary(data) => {
-                            if let Err(e) = other.binary(data).await {
+                        AggregatedMessage::Binary(bin) => {
+                            if let Err(e) = other.binary(bin).await {
                                 debug!("couldn't forward binary message from session #{} to peer: {}", session.id(), e);
                                 break;
                             }
@@ -210,10 +210,6 @@ impl Relayer {
                             }
                             last_pong_received = Instant::now();
                         },
-                        msg => {
-                            debug!("Received websocket message not supported: {:?}", msg);
-                            break;
-                        }
                     }
                 },
                 else => break
