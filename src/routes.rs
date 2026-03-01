@@ -1,4 +1,4 @@
-
+use log::error;
 use actix_web::web::Payload;
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 use uuid::Uuid;
@@ -39,7 +39,8 @@ async fn join_channel(
     let session = RelayerSession::new(session, relayer.clone());
 
     if let Err(e) = relayer.join_channel(id, session, stream).await {
-        return Ok(HttpResponse::InternalServerError().body(e.to_string()))
+        error!("Failed to join channel #{}: {}", id, e);
+        return Ok(HttpResponse::BadRequest().body(e.to_string()))
     }
 
     Ok(response)

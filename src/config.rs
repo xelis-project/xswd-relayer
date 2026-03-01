@@ -93,6 +93,10 @@ const fn default_channel_creation_timeout() -> Duration {
     Duration::from_secs(120)
 }
 
+const fn default_disconnection_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
 fn default_bind_address() -> String {
     "0.0.0.0:8080".to_owned()
 }
@@ -118,6 +122,11 @@ pub struct RelayerConfig {
     #[arg(long, value_parser = parse_duration, default_value = format!("{:?}", default_channel_creation_timeout()))]
     #[serde(with = "humantime_serde", default = "default_channel_creation_timeout")]
     pub channel_creation_timeout: Duration,
+    /// Maximum duration to wait for a disconnected peer to reconnect before closing the channel.
+    /// If a peer disconnects, messages are paused and the system waits for reconnection within this timeout.
+    #[arg(long, value_parser = parse_duration, default_value = format!("{:?}", default_disconnection_timeout()))]
+    #[serde(with = "humantime_serde", default = "default_disconnection_timeout")]
+    pub disconnection_timeout: Duration,
     /// IP:Port address to use for listening connections
     #[arg(long, default_value_t = default_bind_address())]
     #[serde(default = "default_bind_address")]

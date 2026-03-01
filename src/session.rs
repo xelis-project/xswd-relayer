@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix_ws::{CloseReason, Session};
 use bytes::Bytes;
-use tokio::{sync::{oneshot, Mutex}, time::timeout};
+use tokio::{sync::{Mutex, mpsc}, time::timeout};
 use uuid::Uuid;
 
 use crate::{error::RelayerError, relayer::RelayerShared};
@@ -11,7 +11,7 @@ pub struct RelayerSession {
     id: Uuid,
     server: RelayerShared,
     inner: Mutex<Option<Session>>,
-    notify: Mutex<Option<oneshot::Sender<()>>>,
+    notify: Mutex<Option<mpsc::Sender<()>>>,
 }
 
 pub type RelayerSessionShared = Arc<RelayerSession>;
@@ -73,13 +73,18 @@ impl RelayerSession {
         Ok(())
     }
 
-    // Close the session
-    pub async fn close(&self) -> Result<(), RelayerError> {
+    pub async fn notify_close(&self) -> Result<(), RelayerError> {
         let mut notify = self.notify.lock().await;
-        let sender = notify.take()
+        let sender = notify.as_mut()
             .ok_or(RelayerError::SessionNotify)?;
 
-        sender.send(()).map_err(|_| RelayerError::ChannelUnavailable)
+        sender.send(()).await.map_err(|_| RelayerError::SessionNotify)
+    }
+
+    // Close the session
+    pub async fn close(&self) -> Result<(), RelayerError> {
+        let res = self.notify_close().await;
+        self.close_internal(None).await.or(res)
     }
 
     pub async fn close_internal(&self, reason: Option<CloseReason>) -> Result<(), RelayerError> {
@@ -90,7 +95,7 @@ impl RelayerSession {
         session.close(reason).await.map_err(|_| RelayerError::Closed)
     }
 
-    pub async fn set_notify(&self, sender: oneshot::Sender<()>) -> Result<(), RelayerError> {
+    pub async fn set_notify(&self, sender: mpsc::Sender<()>) -> Result<(), RelayerError> {
         let mut notify = self.notify.lock().await;
         if notify.is_some() {
             return Err(RelayerError::SessionNotify)

@@ -14,7 +14,7 @@ pub enum ChannelState {
         notify: oneshot::Sender<RelayerSessionShared>
     },
     #[default]
-    Ready
+    Ready,
 }
 
 pub struct Channel {
@@ -32,7 +32,7 @@ impl Channel {
 
     // Join the channel by notifying the host that we joined it
     // and start handling it
-    pub fn join(&mut self, client: &RelayerSessionShared) -> Result<RelayerSessionShared, RelayerError> {
+    pub fn join(&mut self, client: RelayerSessionShared) -> Result<RelayerSessionShared, RelayerError> {
         if !matches!(self.state, ChannelState::Waiting { .. }) {
             return Err(RelayerError::ChannelUnavailable)
         }
@@ -49,5 +49,23 @@ impl Channel {
             .map_err(|_| RelayerError::NotifyHost)?;
 
         Ok(host)
+    }
+
+    // Channel was previously ready, but a configured timeout is set for waiting for the peer to reconnect after a disconnection,
+    // so we change its state to waiting again
+    pub fn waiting_peer(&mut self, client: RelayerSessionShared) -> Result<oneshot::Receiver<RelayerSessionShared>, RelayerError> {
+        if !matches!(self.state, ChannelState::Ready) {
+            return Err(RelayerError::ChannelUnavailable)
+        }
+
+        let ChannelState::Ready = mem::take(&mut self.state) else {
+            unreachable!()
+        };
+
+        // Change its state to waiting again
+        let (notify, notify_receiver) = oneshot::channel();
+        self.state = ChannelState::Waiting { host: client.clone(), notify };
+
+        Ok(notify_receiver)
     }
 }

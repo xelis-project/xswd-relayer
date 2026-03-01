@@ -1,6 +1,6 @@
-use std::{borrow::Cow, sync::Arc, time::Duration};
+use std::{borrow::Cow, str::FromStr, sync::Arc, time::Duration};
 use actix_web::{web, App, HttpServer};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use actix_ws::{AggregatedMessage, CloseCode, MessageStream};
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
     select,
-    sync::oneshot,
-    time::{interval, timeout, Instant}
+    sync::{mpsc, oneshot},
+    time::{Instant, interval, timeout}
 };
 use uuid::Uuid;
 
@@ -27,6 +27,13 @@ pub struct Relayer {
 }
 
 pub type RelayerShared = Arc<Relayer>;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ExitReason {
+    Normal,
+    Peer,
+    Host,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChannelCreation<'a> {
@@ -92,10 +99,11 @@ impl Relayer {
             return Err(RelayerError::ChannelNotFound)
         };
 
-        let host = channel.join(&client)?;
+        let host = channel.join(client.clone())?;
+        info!("peer has joined channel #{}", id);
 
         let this = Arc::clone(self);
-        actix_rt::spawn(this.handle_connection(id, stream, client, host));
+        actix_rt::spawn(this.handle_connection(id, stream, client, host, false));
 
         Ok(())
     }
@@ -103,7 +111,7 @@ impl Relayer {
     // Create a new channel, this will create a new task waiting until the configured timeout
     // for the peer to connect.
     pub async fn create_new_channel(self: &RelayerShared, mut host: RelayerSessionShared, mut stream: MessageStream) -> Result<(), RelayerError> {
-        let id = Uuid::new_v4();
+        let id = Uuid::from_str("0a87bac8-7982-4faa-b0c3-03466ce45ff4").unwrap();
         let (sender, receiver) = oneshot::channel();
         let channel = Channel::new(host.clone(), sender);
     
@@ -125,102 +133,160 @@ impl Relayer {
                     return;
                 }
             };
-            this.handle_connection(id, stream, host, client).await
+            this.handle_connection(id, stream, host, client, true).await
         });
 
         Ok(())
     }
 
     // Handle a websocket session by forwarding every message to its peer and close its connection if the peer disconnect.
-    async fn handle_connection(self: RelayerShared, id: Uuid, stream: MessageStream, session: RelayerSessionShared, other: RelayerSessionShared) {
+    async fn handle_connection(
+        self: RelayerShared,
+        id: Uuid,
+        stream: MessageStream,
+        session: RelayerSessionShared,
+        mut other: RelayerSessionShared,
+        is_host: bool,
+    ) {
         let mut stream = stream.max_frame_size(self.config.max_frame_size)
             .aggregate_continuations();
         let mut last_pong_received = Instant::now();
-        let mut interval = interval(self.config.keep_alive_interval);
+        let mut ping_interval = interval(self.config.keep_alive_interval);
 
-        let (sender, mut receiver) = oneshot::channel();
+        let (sender, mut receiver) = mpsc::channel(1);
         session.set_notify(sender).await
             .expect("newly created session");
 
-        loop {
-            select! {
-                Ok(()) = &mut receiver => {
-                    debug!("received a close notification, closing session #{}", session.id());
-                    break;
-                },
-                _ = interval.tick() => {
-                    if last_pong_received.elapsed() > self.config.keep_alive_interval {
-                        debug!("session #{} didn't respond in time from our ping", session.id());
-                        break;
-                    }
+        // main loop for handling the session, we break it when the session is closed or when we receive an error while sending or receiving a message
+        'main: loop {
+            let exit_reason = loop {
+                select! {
+                    biased;
+                    Some(()) = receiver.recv() => {
+                        debug!("received a close notification, closing session #{}", session.id());
+                        break ExitReason::Peer;
+                    },
+                    _ = ping_interval.tick() => {
+                        if last_pong_received.elapsed() > self.config.keep_alive_interval {
+                            debug!("session #{} didn't respond in time from our ping", session.id());
+                            break ExitReason::Host;
+                        }
+    
+                        if let Err(e) = session.ping().await {
+                            debug!("Error while sending ping to session #{}: {}", session.id(), e);
+                            break ExitReason::Host;
+                        }
+                    },
+                    res = stream.next() => {
+                        let msg = match res {
+                            Some(msg) => match msg {
+                                Ok(msg) => msg,
+                                Err(e) => {
+                                    debug!("Error while receiving message: {}", e);
+                                    break ExitReason::Host;
+                                }
+                            },
+                            None => {
+                                debug!("session #{} has closed the connection", session.id());
+                                break ExitReason::Normal;
+                            },
+                        };
+    
+                        match msg {
+                            AggregatedMessage::Text(text) => {
+                                if let Err(e) = other.text(text).await {
+                                    debug!("couldn't forward message from session #{} to peer: {}", session.id(), e);
+                                    break ExitReason::Peer;
+                                }
+                            },
+                            AggregatedMessage::Binary(bin) => {
+                                if let Err(e) = other.binary(bin).await {
+                                    debug!("couldn't forward binary message from session #{} to peer: {}", session.id(), e);
+                                    break ExitReason::Peer;
+                                }
+                            },
+                            AggregatedMessage::Close(reason) => {
+                                debug!("Received close message for session {} in {}: {:?}", session.id(), id, reason);
+                                break ExitReason::Normal;
+                            },
+                            AggregatedMessage::Ping(data) => {
+                                trace!("Received ping message with size {} bytes from session #{}", data.len(), session.id());
+                                if !data.is_empty() {
+                                    debug!("Ping data is not empty for session #{}", session.id());
+                                    break ExitReason::Peer;
+                                }
+    
+                                if let Err(e) = session.pong().await {
+                                    debug!("Error received while sending pong response to session #{}: {}", session.id(), e);
+                                    break ExitReason::Host;
+                                }
+                            },
+                            AggregatedMessage::Pong(data) => {
+                                trace!("received pong from session #{}", session.id());
+                                if !data.is_empty() {
+                                    debug!("Data in pong message is not empty for session #{}", session.id());
+                                    break ExitReason::Normal;
+                                }
+                                last_pong_received = Instant::now();
+                            },
+                        }
+                    },
+                    else => break ExitReason::Normal,
+                }
+            };
 
-                    if let Err(e) = session.ping().await {
-                        debug!("Error while sending ping to session #{}: {}", session.id(), e);
-                        break;
-                    }
-                },
-                res = stream.next() => {
-                    let msg = match res {
-                        Some(msg) => match msg {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                debug!("Error while receiving message: {}", e);
-                                break;
-                            }
-                        },
-                        None => {
-                            break;
-                        },
-                    };
+            // if the reason is the peer disconnection
+            // we can wait for a configured timeout for the peer to reconnect before closing the channel and the host connection
+            debug!("session #{} has been disconnected from channel #{}: {:?}, is_host: {}", session.id(), id, exit_reason, is_host);
+            if is_host && matches!(exit_reason, ExitReason::Peer) && self.config.disconnection_timeout > Duration::ZERO {
+                if let Some(mut chan) = self.channels.get_mut(&id) {
+                    let channel = chan.value_mut();
+                    match channel.waiting_peer(session.clone()) {
+                        Ok(receiver) => {
+                            // We must drop the channel before waiting for the peer to reconnect to avoid holding the lock on the channel while waiting
+                            drop(chan);
+                            info!("waiting for the peer to reconnect to channel #{}", id);
 
-                    match msg {
-                        AggregatedMessage::Text(text) => {
-                            if let Err(e) = other.text(text).await {
-                                debug!("couldn't forward message from session #{} to peer: {}", session.id(), e);
-                                break;
-                            }
+                            match timeout(self.config.disconnection_timeout, receiver).await {
+                                Ok(Ok(client)) => {
+                                    debug!("peer has reconnected to channel #{}", id);
+                                    other = client;
+                                    continue 'main;
+                                },
+                                Ok(Err(e)) => {
+                                    warn!("channel #{} is not available for waiting for the peer to reconnect: {}", id, e);
+                                    break;
+                                },
+                                Err(e) => {
+                                    debug!("timeout while waiting for the peer to reconnect to channel #{}: {}", id, e);
+                                    break;
+                                },
+                            };
                         },
-                        AggregatedMessage::Binary(bin) => {
-                            if let Err(e) = other.binary(bin).await {
-                                debug!("couldn't forward binary message from session #{} to peer: {}", session.id(), e);
-                                break;
-                            }
-                        },
-                        AggregatedMessage::Close(reason) => {
-                            trace!("Received close message for session {} in {}: {:?}", session.id(), id, reason);
-                            break;
-                        },
-                        AggregatedMessage::Ping(data) => {
-                            trace!("Received ping message with size {} bytes from session #{}", data.len(), session.id());
-                            if !data.is_empty() {
-                                debug!("Ping data is not empty for session #{}", session.id());
-                                break;
-                            }
-
-                            if let Err(e) = session.pong().await {
-                                debug!("Error received while sending pong response to session #{}: {}", session.id(), e);
-                                break;
-                            }
-                        },
-                        AggregatedMessage::Pong(data) => {
-                            trace!("received pong from session #{}", session.id());
-                            if !data.is_empty() {
-                                debug!("Data in pong message is not empty for session #{}", session.id());
-                                break;
-                            }
-                            last_pong_received = Instant::now();
-                        },
+                        Err(e) => {
+                            warn!("channel #{} is not available for waiting for the peer to reconnect: {}", id, e);
+                        }
                     }
-                },
-                else => break
+                } else {
+                    warn!("channel #{} not found while trying to wait for the peer to reconnect", id);
+                }
             }
-        };
 
-        let _ = session.close_internal(None).await;
-        let _ = other.close().await;
+            break;
+        }
 
-        if self.channels.remove(&id).is_some() {
-            info!("channel #{} has been deleted", id);
+        // We must close everything if its a normal disconnection or that we don't have any configured timeout
+        if is_host {
+            let _ = other.close().await;
+            let _ = session.close_internal(None).await;
+
+            if self.channels.remove(&id).is_some() {
+                info!("channel #{} has been deleted", id);
+            }
+        } else {
+            let _ = other.notify_close().await;
+            let _ = session.close_internal(None).await;
+            info!("peer has disconnected from channel #{}", id);
         }
     }
 }
