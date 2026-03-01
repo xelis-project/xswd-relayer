@@ -162,9 +162,13 @@ impl Relayer {
             let exit_reason = loop {
                 select! {
                     biased;
-                    Some(()) = receiver.recv() => {
+                    Some(is_disconnect) = receiver.recv() => {
                         debug!("received a close notification, closing session #{}", session.id());
-                        break ExitReason::Normal;
+                        break if is_disconnect {
+                            ExitReason::Normal
+                        } else {
+                            ExitReason::Peer
+                        };
                     },
                     _ = ping_interval.tick() => {
                         if last_pong_received.elapsed() > self.config.keep_alive_interval {
@@ -255,11 +259,9 @@ impl Relayer {
                                 },
                                 Ok(Err(e)) => {
                                     warn!("channel #{} is not available for waiting for the peer to reconnect: {}", id, e);
-                                    break;
                                 },
                                 Err(e) => {
                                     debug!("timeout while waiting for the peer to reconnect to channel #{}: {}", id, e);
-                                    break;
                                 },
                             };
                         },
@@ -272,21 +274,21 @@ impl Relayer {
                 }
             }
 
-            break;
-        }
+            // We must close everything if its a normal disconnection or that we don't have any configured timeout
+            if is_host {
+                let _ = other.close().await;
+                let _ = session.close_internal(None).await;
 
-        // We must close everything if its a normal disconnection or that we don't have any configured timeout
-        if is_host {
-            let _ = other.close().await;
-            let _ = session.close_internal(None).await;
-
-            if self.channels.remove(&id).is_some() {
-                info!("channel #{} has been deleted", id);
+                if self.channels.remove(&id).is_some() {
+                    info!("channel #{} has been deleted", id);
+                }
+            } else {
+                let _ = other.notify_close(matches!(exit_reason, ExitReason::Normal)).await;
+                let _ = session.close_internal(None).await;
+                info!("peer has disconnected from channel #{}", id);
             }
-        } else {
-            let _ = other.notify_close().await;
-            let _ = session.close_internal(None).await;
-            info!("peer has disconnected from channel #{}", id);
+
+            break;
         }
     }
 }

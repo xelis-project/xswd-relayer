@@ -11,7 +11,7 @@ pub struct RelayerSession {
     id: Uuid,
     server: RelayerShared,
     inner: Mutex<Option<Session>>,
-    notify: Mutex<Option<mpsc::Sender<()>>>,
+    notify: Mutex<Option<mpsc::Sender<bool>>>,
 }
 
 pub type RelayerSessionShared = Arc<RelayerSession>;
@@ -73,17 +73,17 @@ impl RelayerSession {
         Ok(())
     }
 
-    pub async fn notify_close(&self) -> Result<(), RelayerError> {
+    pub async fn notify_close(&self, is_disconnect: bool) -> Result<(), RelayerError> {
         let mut notify = self.notify.lock().await;
         let sender = notify.as_mut()
             .ok_or(RelayerError::SessionNotify)?;
 
-        sender.send(()).await.map_err(|_| RelayerError::SessionNotify)
+        sender.send(is_disconnect).await.map_err(|_| RelayerError::SessionNotify)
     }
 
     // Close the session
     pub async fn close(&self) -> Result<(), RelayerError> {
-        let res = self.notify_close().await;
+        let res = self.notify_close(true).await;
         self.close_internal(None).await.or(res)
     }
 
@@ -95,7 +95,7 @@ impl RelayerSession {
         session.close(reason).await.map_err(|_| RelayerError::Closed)
     }
 
-    pub async fn set_notify(&self, sender: mpsc::Sender<()>) -> Result<(), RelayerError> {
+    pub async fn set_notify(&self, sender: mpsc::Sender<bool>) -> Result<(), RelayerError> {
         let mut notify = self.notify.lock().await;
         if notify.is_some() {
             return Err(RelayerError::SessionNotify)

@@ -82,7 +82,7 @@ const fn default_max_frame_size() -> usize {
 }
 
 const fn default_keep_alive_interval() -> Duration {
-    Duration::from_secs(60)
+    Duration::from_secs(15)
 }
 
 const fn default_session_message_timeout() -> Duration {
