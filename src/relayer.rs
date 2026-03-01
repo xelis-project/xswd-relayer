@@ -1,4 +1,4 @@
-use std::{borrow::Cow, str::FromStr, sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 use actix_web::{web, App, HttpServer};
 use log::{debug, info, trace, warn};
 use actix_ws::{AggregatedMessage, CloseCode, MessageStream};
@@ -111,7 +111,7 @@ impl Relayer {
     // Create a new channel, this will create a new task waiting until the configured timeout
     // for the peer to connect.
     pub async fn create_new_channel(self: &RelayerShared, mut host: RelayerSessionShared, mut stream: MessageStream) -> Result<(), RelayerError> {
-        let id = Uuid::from_str("0a87bac8-7982-4faa-b0c3-03466ce45ff4").unwrap();
+        let id = Uuid::new_v4();
         let (sender, receiver) = oneshot::channel();
         let channel = Channel::new(host.clone(), sender);
     
