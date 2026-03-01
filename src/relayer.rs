@@ -164,7 +164,7 @@ impl Relayer {
                     biased;
                     Some(()) = receiver.recv() => {
                         debug!("received a close notification, closing session #{}", session.id());
-                        break ExitReason::Peer;
+                        break ExitReason::Normal;
                     },
                     _ = ping_interval.tick() => {
                         if last_pong_received.elapsed() > self.config.keep_alive_interval {
