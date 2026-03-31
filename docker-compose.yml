@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  xswd-relayer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xswd-relayer:latest
+    container_name: xswd-relayer
+    restart: unless-stopped
+
+    # Ports - expose 8080 for WebSocket connections
+    ports:
+      - "8080:8080"
+
+    # Environment variables (optional)
+    environment:
+      - RUST_LOG=debug
+
+    # Volumes for persistent logs
+    volumes:
+      - ./logs:/app/logs
+
+    # Override default command to set debug log level
+    command: >
+      xswd-relayer
+      --bind-address 0.0.0.0:8080
+      --log-level debug
+      --disable-interactive-mode
+      --disable-ascii-art
+
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    # Custom command with config options (uncomment to override defaults)
+    # command: >
+    #   xswd-relayer
+    #   --bind-address 0.0.0.0:8080
+    #   --log-level info
+    #   --disable-interactive-mode
+    #   --disable-ascii-art
+    #   --keep-alive-interval 60s
+    #   --channel-creation-timeout 120s
+
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Optional: Cloudflared tunnel (if running in same compose)
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: cloudflared-xswd
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run --token YOUR_TUNNEL_TOKEN
+  #   depends_on:
+  #     - xswd-relayer

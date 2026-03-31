@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Rust build artifacts
+target/
+
+# Logs
+logs/
+*.log
+
+# Documentation
+README.md
+*.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+docker-compose.yml
